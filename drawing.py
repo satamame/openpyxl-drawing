@@ -40,7 +40,17 @@ def restore_content_types(before_dir: Path, after_dir: Path):
 
     # 保存する。
     tree = etree.ElementTree(root)
-    tree.write('filename.xml', encoding='utf-8')
+    tree.write(after_dir / '[Content_Types].xml', encoding='utf-8')
+
+
+def restore_drawings(before_dir: Path, after_dir: Path, folder2restore: str):
+    '''folder2restore フォルダを復元する。
+    '''
+    src = before_dir / folder2restore
+    dest = after_dir / folder2restore
+
+    if not os.path.exists(dest):
+        shutil.copytree(src, dest)
 
 
 def main():
@@ -69,6 +79,19 @@ def main():
 
     # [Content_Types].xml 内の要素を復元 (before ⇒ after) する。
     restore_content_types(before_dir, after_dir)
+
+    # xl/drawings/ フォルダを復元 (before ⇒ after) する。
+    restore_drawings(before_dir, after_dir, 'xl/drawings')
+
+    # xl/media/ フォルダを復元 (before ⇒ after) する。
+    restore_drawings(before_dir, after_dir, 'xl/media/')
+
+    # xl/worksheets/_rels/ フォルダを復元 (before ⇒ after) する。
+    restore_drawings(before_dir, after_dir, 'xl/worksheets/_rels/')
+
+    # TODO: xl/worksheets/sheet1.xml の内容を復元する。
+
+    # TODO: xl/worksheets/sheet2.xml の内容を復元する。
 
 
 if __name__ == '__main__':
