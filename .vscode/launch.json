@@ -8,11 +8,13 @@
             "name": "Python Debugger: Current File with Arguments",
             "type": "debugpy",
             "request": "launch",
-            "program": "drawing.py",
+            "program": "app.py",
             "console": "integratedTerminal",
-            // "args": [
-            //     "${command:pickArgs}"
-            // ]
+            "args": [
+                "a.xlsx",
+                "b.xlsx",
+                "--keep-temp-dir"
+            ]
         }
     ]
 }

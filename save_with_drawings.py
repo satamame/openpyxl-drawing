@@ -1,13 +1,11 @@
 import os
 import re
 import shutil
-import tempfile
 import zipfile
-from datetime import datetime
 from pathlib import Path
 
-import openpyxl
 from lxml import etree
+from openpyxl.workbook.workbook import Workbook
 
 
 def restore_content_types(before_dir: Path, after_dir: Path):
@@ -18,9 +16,14 @@ def restore_content_types(before_dir: Path, after_dir: Path):
 
     namespaces = {'ns': root.nsmap[None]}
 
-    # `Extension="jpg"` の `<Default>` 要素。
-    jpg_defaults = root.xpath(
-        "ns:Default[@Extension='jpg']", namespaces=namespaces)
+    # `Content-Type` が "image/" で始まる `<Default>` 要素。
+    image_defaults = root.xpath(
+        "ns:Default[starts-with(@ContentType, 'image/')]",
+        namespaces=namespaces)
+
+    # `Extension="vml"` の `<Default>` 要素。
+    vml_defaults = root.xpath(
+        "ns:Default[@Extension='vml']", namespaces=namespaces)
 
     # `PartName="/xl/drawings/drawing*.xml"` の `<Override>` 要素。
     drawing_overrides = root.xpath(
@@ -31,7 +34,10 @@ def restore_content_types(before_dir: Path, after_dir: Path):
     tree = etree.parse(after_dir / '[Content_Types].xml')
     root = tree.getroot()
 
-    for el in jpg_defaults:
+    for el in image_defaults:
+        root.append(el)
+
+    for el in vml_defaults:
         root.append(el)
 
     for el in drawing_overrides:
@@ -42,7 +48,7 @@ def restore_content_types(before_dir: Path, after_dir: Path):
     tree.write(after_dir / '[Content_Types].xml', encoding='utf-8')
 
 
-def restore_drawings(before_dir: Path, after_dir: Path, folder2restore: str):
+def restore_folder(before_dir: Path, after_dir: Path, folder2restore: str):
     '''folder2restore フォルダを復元する。
     '''
     src = before_dir / folder2restore
@@ -86,55 +92,41 @@ def restore_worksheets(before_dir: Path, after_dir: Path):
         tree.write(f2, encoding='utf-8')
 
 
-def main():
-    before_dir = Path('temp/before')
-    after_dir = Path('temp/after')
-    open_file = Path('a.xlsx')
-    save_file = Path('temp/a2.xlsx')
+def save_with_drawings(
+        wb: Workbook, src: Path, dest: Path, temp_dir: Path = Path('.')):
+    before_dir = temp_dir / 'before'
+    after_dir = temp_dir / 'after'
 
-    # フォルダをクリアする。
-    if before_dir.exists():
-        shutil.rmtree(before_dir)
-    if after_dir.exists():
-        shutil.rmtree(after_dir)
-
-    # a.xlsx を before_dir に解凍する。
-    with zipfile.ZipFile(open_file, 'r') as zf:
+    # src を before_dir に解凍する。
+    with zipfile.ZipFile(src, 'r') as zf:
         zf.extractall(str(before_dir))
 
-    # a.xlsx を openpyxl で開いて a2.xlsx に保存する。
-    wb = openpyxl.load_workbook(open_file)
-    wb.worksheets[0]['A1'].value = datetime.now()
-    wb.save(save_file)
-    wb.close()
+    # wb を dest に保存する。
+    wb.save(dest)
 
-    # a2.xlsx を after_dir に解凍する。
-    with zipfile.ZipFile(save_file, 'r') as zf:
+    # dest を after_dir に解凍する。
+    with zipfile.ZipFile(dest, 'r') as zf:
         zf.extractall(str(after_dir))
 
     # [Content_Types].xml 内の要素を復元 (before ⇒ after) する。
     restore_content_types(before_dir, after_dir)
 
     # xl/drawings/ フォルダを復元 (before ⇒ after) する。
-    restore_drawings(before_dir, after_dir, 'xl/drawings/')
+    restore_folder(before_dir, after_dir, 'xl/drawings/')
 
     # xl/media/ フォルダを復元 (before ⇒ after) する。
-    restore_drawings(before_dir, after_dir, 'xl/media/')
+    restore_folder(before_dir, after_dir, 'xl/media/')
 
     # xl/worksheets/_rels/ フォルダを復元 (before ⇒ after) する。
-    restore_drawings(before_dir, after_dir, 'xl/worksheets/_rels/')
+    restore_folder(before_dir, after_dir, 'xl/worksheets/_rels/')
 
     # xl/worksheets/sheet*.xml の内容を復元 (before ⇒ after) する。
     restore_worksheets(before_dir, after_dir)
 
-    # save_file に圧縮しなおす。
-    with zipfile.ZipFile(save_file, 'w') as zf:
+    # dest に圧縮しなおす。
+    with zipfile.ZipFile(dest, 'w') as zf:
         for root, _, files in os.walk(after_dir):
             for file in files:
                 file_path = os.path.join(root, file)
                 arcname = os.path.relpath(file_path, after_dir)
                 zf.write(file_path, arcname)
-
-
-if __name__ == '__main__':
-    main()
