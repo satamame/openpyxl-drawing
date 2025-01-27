@@ -11,8 +11,8 @@
             "program": "app.py",
             "console": "integratedTerminal",
             "args": [
-                "a.xlsx",
-                "b.xlsx",
+                "secret_test/master.xlsm",
+                "secret_test/b.xlsm",
                 "--keep-temp-dir"
             ]
         }

@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -93,40 +94,56 @@ def restore_worksheets(before_dir: Path, after_dir: Path):
 
 
 def save_with_drawings(
-        wb: Workbook, src: Path, dest: Path, temp_dir: Path = Path('.')):
-    before_dir = temp_dir / 'before'
-    after_dir = temp_dir / 'after'
+        wb: Workbook, src: Path, dest: Path, temp_dir_args={}):
+    '''図形や画像を復元しつつ Workbook を保存する。
 
-    # src を before_dir に解凍する。
-    with zipfile.ZipFile(src, 'r') as zf:
-        zf.extractall(str(before_dir))
+    Parameters
+    ----------
+    wb : Workbook
+        保存する Workbook。
+    src : Path
+        復元する図形や画像の元となるブックファイルのパス。
+    dest : Path
+        Workbook の保存先となるブックファイルのパス。
+    temp_dir_args : dict, default {}
+        TemporaryDirectory を作る時のパラメータ。
+    '''
+    with tempfile.TemporaryDirectory(**temp_dir_args) as temp_dir:
+        before_dir = Path(temp_dir) / 'before'
+        after_dir = Path(temp_dir) / 'after'
 
-    # wb を dest に保存する。
-    wb.save(dest)
+        # src を before_dir に解凍する。
+        with zipfile.ZipFile(src, 'r') as zf:
+            zf.extractall(str(before_dir))
 
-    # dest を after_dir に解凍する。
-    with zipfile.ZipFile(dest, 'r') as zf:
-        zf.extractall(str(after_dir))
+        # wb を dest に保存する。
+        wb.save(dest)
 
-    # [Content_Types].xml 内の要素を復元 (before ⇒ after) する。
-    restore_content_types(before_dir, after_dir)
+        # dest を after_dir に解凍する。
+        with zipfile.ZipFile(dest, 'r') as zf:
+            zf.extractall(str(after_dir))
 
-    # xl/drawings/ フォルダを復元 (before ⇒ after) する。
-    restore_folder(before_dir, after_dir, 'xl/drawings/')
+        # [Content_Types].xml 内の要素を復元 (before ⇒ after) する。
+        # TODO: after_dir が存在するとコピーしない動作になっている。
+        # TODO: 存在した場合でも特定のファイルやサブディレクトリをコピーするようにする。
+        restore_content_types(before_dir, after_dir)
 
-    # xl/media/ フォルダを復元 (before ⇒ after) する。
-    restore_folder(before_dir, after_dir, 'xl/media/')
+        # xl/drawings/ フォルダを復元 (before ⇒ after) する。
+        restore_folder(before_dir, after_dir, 'xl/drawings/')
 
-    # xl/worksheets/_rels/ フォルダを復元 (before ⇒ after) する。
-    restore_folder(before_dir, after_dir, 'xl/worksheets/_rels/')
+        # xl/media/ フォルダを復元 (before ⇒ after) する。
+        restore_folder(before_dir, after_dir, 'xl/media/')
 
-    # xl/worksheets/sheet*.xml の内容を復元 (before ⇒ after) する。
-    restore_worksheets(before_dir, after_dir)
+        # xl/worksheets/_rels/ フォルダを復元 (before ⇒ after) する。
+        restore_folder(before_dir, after_dir, 'xl/worksheets/_rels/')
 
-    # dest に圧縮しなおす。
-    with zipfile.ZipFile(dest, 'w') as zf:
-        for root, _, files in os.walk(after_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, after_dir)
-                zf.write(file_path, arcname)
+        # xl/worksheets/sheet*.xml の内容を復元 (before ⇒ after) する。
+        restore_worksheets(before_dir, after_dir)
+
+        # dest に圧縮しなおす。
+        with zipfile.ZipFile(dest, 'w') as zf:
+            for root, _, files in os.walk(after_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, after_dir)
+                    zf.write(file_path, arcname)
