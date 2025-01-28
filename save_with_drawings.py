@@ -12,40 +12,37 @@ from openpyxl.workbook.workbook import Workbook
 def restore_content_types(before_dir: Path, after_dir: Path):
     '''[Content_Types].xml 内の要素を復元する。
     '''
-    tree = etree.parse(before_dir / '[Content_Types].xml')
-    root = tree.getroot()
+    before_tree = etree.parse(before_dir / '[Content_Types].xml')
+    before_root = before_tree.getroot()
+    after_tree = etree.parse(after_dir / '[Content_Types].xml')
+    after_root = after_tree.getroot()
 
-    namespaces = {'ns': root.nsmap[None]}
+    # openpyxl によって保存された Override 要素
+    overrides = after_root.findall(".//{*}Override")
+    after_overrides = {
+        child.get("PartName") for child in overrides if child.get("PartName")
+    }
 
-    # `Content-Type` が "image/" で始まる `<Default>` 要素。
-    image_defaults = root.xpath(
-        "ns:Default[starts-with(@ContentType, 'image/')]",
-        namespaces=namespaces)
+    # openpyxl によって保存された Default 要素
+    defaults = after_root.findall(".//{*}Default")
+    after_defaults = {
+        child.get("Extension") for child in defaults if child.get("Extension")
+    }
 
-    # `Extension="vml"` の `<Default>` 要素。
-    vml_defaults = root.xpath(
-        "ns:Default[@Extension='vml']", namespaces=namespaces)
+    # Add missing <Override> tags from original to modified
+    for child in before_root.findall(".//{*}Override"):
+        part_name = child.get("PartName")
+        if part_name and part_name not in after_overrides:
+            after_root.append(child)
 
-    # `PartName="/xl/drawings/drawing*.xml"` の `<Override>` 要素。
-    drawing_overrides = root.xpath(
-        "ns:Override[starts-with(@PartName, '/xl/drawings/drawing')]",
-        namespaces=namespaces)
-
-    # 保存後の xml に追加する。
-    tree = etree.parse(after_dir / '[Content_Types].xml')
-    root = tree.getroot()
-
-    for el in image_defaults:
-        root.append(el)
-
-    for el in vml_defaults:
-        root.append(el)
-
-    for el in drawing_overrides:
-        root.append(el)
+    # Add missing <Default> tags from original to modified
+    for child in before_root.findall(".//{*}Default"):
+        extension = child.get("Extension")
+        if extension and extension not in after_defaults:
+            after_root.append(child)
 
     # 保存する。
-    tree = etree.ElementTree(root)
+    tree = etree.ElementTree(after_root)
     tree.write(after_dir / '[Content_Types].xml', encoding='utf-8')
 
 
@@ -94,7 +91,7 @@ def restore_worksheets(before_dir: Path, after_dir: Path):
 
 
 def save_with_drawings(
-        wb: Workbook, src: Path, dest: Path, temp_dir_args={}):
+        wb: Workbook, src: Path, dest: Path, temp_dir_args=None):
     '''図形や画像を復元しつつ Workbook を保存する。
 
     Parameters
@@ -105,9 +102,12 @@ def save_with_drawings(
         復元する図形や画像の元となるブックファイルのパス。
     dest : Path
         Workbook の保存先となるブックファイルのパス。
-    temp_dir_args : dict, default {}
+    temp_dir_args : dict | None, default None
         TemporaryDirectory を作る時のパラメータ。
     '''
+    if temp_dir_args is None:
+        temp_dir_args = {}
+
     with tempfile.TemporaryDirectory(**temp_dir_args) as temp_dir:
         before_dir = Path(temp_dir) / 'before'
         after_dir = Path(temp_dir) / 'after'
