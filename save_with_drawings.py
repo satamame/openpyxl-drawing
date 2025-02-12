@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 from lxml import etree
+from lxml.etree import Element
 from openpyxl.workbook.workbook import Workbook
 
 
@@ -71,6 +72,18 @@ def restore_folder(
         shutil.copytree(src, dest)
 
 
+def get_rel_max_id(el: Element) -> int:
+    '''ある xml 要素の下で、Relationship 要素の最大 Id を取得する。
+    '''
+    ids = [
+        int(re.search(r'\d+', rel.get("Id", ""))[0])  # 数値部分を抽出
+        for rel in el.xpath(".//Relationship")
+        if re.search(r'\d+', rel.get("Id", ""))
+    ]
+    max_id = max(ids) if ids else 0
+    return max_id
+
+
 def restore_workbook_xml_rels(
         before_dir: Path, after_dir: Path, filename: str):
     '''xl/_rels/workbook.xml.rels 内の要素を復元する。
@@ -94,25 +107,21 @@ def restore_workbook_xml_rels(
     shutil.copy(before_rel_path, after_rel_path)
 
     # 保存後の workbook.xml.rels に Relationship があれば、中断。
-    found = after_root.xpath(f'.//Relationship[@Target="{filename}"]')
+    namespaces = {'ns': after_root.nsmap[None]}
+    found = after_root.xpath(
+        f'ns:Relationship[@Target="{filename}"]', namespaces=namespaces)
     if found:
         return
 
     # Relationship 要素の新しい Id を採番する。
-    ids = [
-        int(re.search(r'\d+', rel.get("Id", ""))[0])  # 数値部分を抽出
-        for rel in after_root.xpath(".//Relationship")
-        if re.search(r'\d+', rel.get("Id", ""))
-    ]
-    max_id = max(ids) if ids else 0
-    new_id = f'rId{max_id + 1}'
+    new_id = get_rel_max_id(after_root) + 1
 
     NAMESPACE = \
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     type_ = 'sheetMetadata' if filename == 'metadata.xml' else filename[:-4]
 
     new_rel = etree.Element("Relationship", {
-        "Id": new_id,
+        "Id": f'rId{new_id}',
         "Type": f'{NAMESPACE}/{type_}',
         "Target": filename,
     })
@@ -136,7 +145,7 @@ def restore_worksheets(before_dir: Path, after_dir: Path):
             continue
 
         f2 = dest_dir / f.name
-        if not f2.exists():
+        if not f2.is_file():
             continue
 
         tree = etree.parse(f)
@@ -157,6 +166,58 @@ def restore_worksheets(before_dir: Path, after_dir: Path):
         # 保存する。
         tree = etree.ElementTree(root)
         tree.write(f2, encoding='utf-8')
+
+
+def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
+    '''xl/worksheets/_rels/sheet*.xml.rels 内の Relation を復元する。
+
+    Target="../drawings/drawing*.xml" のものを復元する。
+    '''
+    src_dir = before_dir / 'xl/worksheets/_rels'
+    dest_dir = after_dir / 'xl/worksheets/_rels'
+
+    fname_ptn = re.compile(r'sheet[0-9]+\.xml.rels')
+
+    for f in src_dir.iterdir():
+        if not (f.is_file() and fname_ptn.fullmatch(f.name)):
+            continue
+
+        f2 = dest_dir / f.name
+        if not f2.is_file():
+            continue
+
+        before_tree = etree.parse(f)
+        before_root = before_tree.getroot()
+
+        after_tree = etree.parse(f2)
+        after_root = after_tree.getroot()
+
+        namespaces = {'ns': before_root.nsmap[None]}
+        rels = before_root.xpath('ns:Relationship', namespaces=namespaces)
+
+        target_ptn = re.compile(r'\.\./drawings/drawing[0-9]+.xml')
+        existings = []
+        for rel in rels:
+            target = rel.get('Target')
+            if target and target_ptn.fullmatch(target):
+                existings.append(rel)
+
+        max_id = get_rel_max_id(after_root)
+        for rel in existings:
+            # 保存後の sheet*.xml.rels に Relationship があれば、スキップ。
+            target = rel.get('Target')
+            found = after_root.xpath(
+                f'ns:Relationship[@Target="{target}"]', namespaces=namespaces)
+            if found:
+                continue
+
+            max_id += 1
+            rel.set('Id', f'rId{max_id}')
+            after_root.append(rel)
+
+        # 保存する。
+        tree = etree.ElementTree(after_root)
+        tree.write(dest_dir / f.name, encoding='utf-8')
 
 
 def save_with_drawings(
@@ -212,6 +273,9 @@ def save_with_drawings(
 
         # xl/_rels/metadata.xml.rels の metadata.xml を復元する。
         restore_workbook_xml_rels(before_dir, after_dir, 'metadata.xml')
+
+        # xl/worksheets/_rels/sheet*.xml.rels 内の Relation を復元する。
+        restore_sheet_xml_rels(before_dir, after_dir)
 
         ''' **** ここまで動作確認済み。****
         '''
