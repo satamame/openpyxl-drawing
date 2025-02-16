@@ -33,11 +33,14 @@ def restore_content_types(before_dir: Path, after_dir: Path):
     # Add missing <Override> tags from original to modified
     cmt_ptn = re.compile(r'/xl/comments\d+\.xml')
     for child in before_root.findall(".//{*}Override"):
-        part_name = child.get("PartName")
+        part_name: str = child.get("PartName")
         if not part_name:
             continue
         # xl/calcChain.xml は Excel が復元するので、復元しない。
         if part_name == '/xl/calcChain.xml':
+            continue
+        # xl/ctrlProps/* は、ActiveX を使っていない想定なので復元しない。
+        if part_name.startswith('/xl/ctrlProps/'):
             continue
         # xl 直下の comments*.xml は openpyxl によって xl/comments/
         # フォルダ以下に移動されているので、復元しない。
@@ -220,6 +223,52 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
         tree.write(dest_dir / f.name, encoding='utf-8')
 
 
+def restore_doc_props_app(before_dir: Path, after_dir: Path):
+    '''docProps/app.xml の重要な要素を復元する。
+    '''
+    before_app_path = before_dir / 'docProps/app.xml'
+    after_app_path = after_dir / 'docProps/app.xml'
+
+    before_tree = etree.parse(before_app_path)
+    before_root = before_tree.getroot()
+
+    after_tree = etree.parse(after_app_path)
+    after_root = after_tree.getroot()
+
+    # vt ネームスペースを取得
+    vt_namespace = before_root.nsmap.get("vt")
+    namespaces = after_root.nsmap
+    if vt_namespace:
+        namespaces['vt'] = vt_namespace
+
+    # HeadingPairs と TitlesOfParts を取得
+    heading_pairs = before_root.find(
+        "ns:HeadingPairs", namespaces={"ns": before_root.nsmap[None]})
+    titles_of_parts = before_root.find(
+        "ns:TitlesOfParts", namespaces={"ns": before_root.nsmap[None]})
+
+    # 保存後の root から HeadingPairs と TitlesOfParts を削除
+    elems = after_root.findall(
+        "ns:HeadingPairs", namespaces={"ns": after_root.nsmap[None]})
+    for elem in elems:
+        after_root.remove(elem)
+    elems = after_root.findall(
+        "ns:TitlesOfParts", namespaces={"ns": after_root.nsmap[None]})
+    for elem in elems:
+        after_root.remove(elem)
+
+    # 保存前から取得した HeadingPairs と TitlesOfParts を保存後の root に追加
+    if heading_pairs is not None:
+        after_root.append(heading_pairs)
+
+    if titles_of_parts is not None:
+        after_root.append(titles_of_parts)
+
+    # 保存する。
+    tree = etree.ElementTree(after_root)
+    tree.write(after_app_path, encoding='utf-8')
+
+
 def save_with_drawings(
         wb: Workbook, src: Path, dest: Path, temp_dir_args=None):
     '''図形や画像を復元しつつ Workbook を保存する。
@@ -276,6 +325,12 @@ def save_with_drawings(
 
         # xl/worksheets/_rels/sheet*.xml.rels 内の Relation を復元する。
         restore_sheet_xml_rels(before_dir, after_dir)
+
+        # docProps/app.xml の重要な要素を復元する。
+        restore_doc_props_app(before_dir, after_dir)
+
+        # xl/ctrlProps/ フォルダを削除する。※ ActiveX control を使っていない前提。
+        shutil.rmtree(after_dir / 'xl/ctrlProps', ignore_errors=True)
 
         ''' **** ここまで動作確認済み。****
         '''
