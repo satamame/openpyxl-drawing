@@ -75,6 +75,22 @@ def restore_folder(
         shutil.copytree(src, dest)
 
 
+def restore_xl_drawings_folder(before_dir: Path, after_dir: Path):
+    '''xl/drawings/ フォルダを復元する。
+    '''
+    src = before_dir / 'xl/drawings/'
+    dest = after_dir / 'xl/drawings/'
+
+    shutil.rmtree(dest)
+    dest.mkdir()
+
+    for f in src.iterdir():
+        if f.name == '_rels':
+            shutil.copytree(f, dest / '_rels')
+        elif f.suffix == '.xml':
+            shutil.copy2(f, dest)
+
+
 def get_rel_max_id(el: Element) -> int:
     '''ある xml 要素の下で、Relationship 要素の最大 Id を取得する。
     '''
@@ -85,54 +101,6 @@ def get_rel_max_id(el: Element) -> int:
     ]
     max_id = max(ids) if ids else 0
     return max_id
-
-
-def restore_workbook_xml_rels(
-        before_dir: Path, after_dir: Path, filename: str):
-    '''xl/_rels/workbook.xml.rels 内の要素を復元する。
-
-    filename は sharedStrings.xml, metadata.xml のいずれか。
-    xl/ フォルダの直下にそのファイルがあったが保存後になくなった場合:
-        workbook.xml.rels に Relationship タグを追加。
-        必要に応じて xl/ フォルダにこれらのファイルをコピー。
-        復元した workbook.xml.rels を xl/_rels/ に保存。
-    '''
-    after_tree = etree.parse(after_dir / 'xl/_rels/workbook.xml.rels')
-    after_root = after_tree.getroot()
-
-    before_rel_path = before_dir / 'xl' / filename
-    after_rel_path = after_dir / 'xl' / filename
-
-    # ファイルが保存後に存在しているか、保存前に存在していないなら、中断。
-    if after_rel_path.exists() or not before_rel_path.exists():
-        return
-
-    shutil.copy(before_rel_path, after_rel_path)
-
-    # 保存後の workbook.xml.rels に Relationship があれば、中断。
-    namespaces = {'ns': after_root.nsmap[None]}
-    found = after_root.xpath(
-        f'ns:Relationship[@Target="{filename}"]', namespaces=namespaces)
-    if found:
-        return
-
-    # Relationship 要素の新しい Id を採番する。
-    new_id = get_rel_max_id(after_root) + 1
-
-    NAMESPACE = \
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-    type_ = 'sheetMetadata' if filename == 'metadata.xml' else filename[:-4]
-
-    new_rel = etree.Element("Relationship", {
-        "Id": f'rId{new_id}',
-        "Type": f'{NAMESPACE}/{type_}',
-        "Target": filename,
-    })
-    after_root.append(new_rel)
-
-    # 保存する。
-    tree = etree.ElementTree(after_root)
-    tree.write(after_dir / 'xl/_rels/workbook.xml.rels', encoding='utf-8')
 
 
 def restore_worksheets(before_dir: Path, after_dir: Path):
@@ -314,14 +282,7 @@ def save_with_drawings(
         # xl/drawings/ フォルダを復元 (before ⇒ after) する。
         # 保存後にフォルダが存在するため、削除してから復元する。
         # TODO: 「削除してから復元」で矛盾が起きないか確認すること。
-        restore_folder(
-            before_dir, after_dir, 'xl/drawings/', delete_first=True)
-
-        # xl/_rels/workbook.xml.rels の sharedStrings.xml を復元する。
-        restore_workbook_xml_rels(before_dir, after_dir, 'sharedStrings.xml')
-
-        # xl/_rels/metadata.xml.rels の metadata.xml を復元する。
-        restore_workbook_xml_rels(before_dir, after_dir, 'metadata.xml')
+        restore_xl_drawings_folder(before_dir, after_dir)
 
         # xl/worksheets/_rels/sheet*.xml.rels 内の Relation を復元する。
         restore_sheet_xml_rels(before_dir, after_dir)
