@@ -85,6 +85,7 @@ def restore_xl_drawings_folder(before_dir: Path, after_dir: Path):
     dest.mkdir()
 
     for f in src.iterdir():
+        # _rels/ フォルダと *.xml ファイルを復元する。
         if f.name == '_rels':
             shutil.copytree(f, dest / '_rels')
         elif f.suffix == '.xml':
@@ -150,9 +151,11 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
     fname_ptn = re.compile(r'sheet[0-9]+\.xml.rels')
 
     for f in src_dir.iterdir():
+        # sheet*.xml.rels ファイルだけを処理する。
         if not (f.is_file() and fname_ptn.fullmatch(f.name)):
             continue
 
+        # 保存後にそのファイルがなければ処理をスキップする。
         f2 = dest_dir / f.name
         if not f2.is_file():
             continue
@@ -163,9 +166,9 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
         after_tree = etree.parse(f2)
         after_root = after_tree.getroot()
 
+        # 保存前の Target="../drawings/drawing*.xml" である Relationship を取得。
         namespaces = {'ns': before_root.nsmap[None]}
         rels = before_root.xpath('ns:Relationship', namespaces=namespaces)
-
         target_ptn = re.compile(r'\.\./drawings/drawing[0-9]+.xml')
         existings = []
         for rel in rels:
@@ -175,7 +178,7 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
 
         max_id = get_rel_max_id(after_root)
         for rel in existings:
-            # 保存後の sheet*.xml.rels に Relationship があれば、スキップ。
+            # 保存後の sheet*.xml.rels に同じ Relationship があれば、スキップ。
             target = rel.get('Target')
             found = after_root.xpath(
                 f'ns:Relationship[@Target="{target}"]', namespaces=namespaces)
@@ -185,6 +188,16 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
             max_id += 1
             rel.set('Id', f'rId{max_id}')
             after_root.append(rel)
+
+        # Target="../drawings/vmlDrawing*.vml" である Relationship を削除。
+        # Target="/xl/drawings/vmlDrawing*.vml" になっている場合も考慮する。
+        namespaces = {'ns': after_root.nsmap[None]}
+        rels = after_root.xpath('ns:Relationship', namespaces=namespaces)
+        target_ptn = re.compile(r'(\.\.|/xl)/drawings/vmlDrawing[0-9]+.vml')
+        for rel in rels:
+            target = rel.get("Target")
+            if target and target_ptn.fullmatch(target):
+                after_root.remove(rel)
 
         # 保存する。
         tree = etree.ElementTree(after_root)
