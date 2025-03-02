@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 import shutil
@@ -106,6 +107,8 @@ def get_rel_max_id(el: Element) -> int:
 
 def restore_worksheets(before_dir: Path, after_dir: Path):
     '''xl/worksheets/ フォルダ下の sheet*.xml の drawing 要素を復元する。
+
+    ついでに legacyDrawing 要素を削除する。
     '''
     src_dir = before_dir / 'xl/worksheets'
     dest_dir = after_dir / 'xl/worksheets'
@@ -135,6 +138,11 @@ def restore_worksheets(before_dir: Path, after_dir: Path):
         for el in drawings:
             root.append(el)
 
+        # `<legacyDrawing>` 要素は削除する。
+        legacy_drawings = root.xpath("ns:legacyDrawing", namespaces=namespaces)
+        for el in legacy_drawings:
+            root.remove(el)
+
         # 保存する。
         tree = etree.ElementTree(root)
         tree.write(f2, encoding='utf-8')
@@ -155,16 +163,18 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
         if not (f.is_file() and fname_ptn.fullmatch(f.name)):
             continue
 
-        # 保存後にそのファイルがなければ処理をスキップする。
-        f2 = dest_dir / f.name
-        if not f2.is_file():
-            continue
-
         before_tree = etree.parse(f)
         before_root = before_tree.getroot()
 
-        after_tree = etree.parse(f2)
-        after_root = after_tree.getroot()
+        f2 = dest_dir / f.name
+        if not f2.is_file():
+            # 保存後にそのファイルがなければ新規で作る。
+            after_tree = copy.deepcopy(before_tree)
+            after_root = after_tree.getroot()
+            after_root.clear()
+        else:
+            after_tree = etree.parse(f2)
+            after_root = after_tree.getroot()
 
         # 保存前の Target="../drawings/drawing*.xml" である Relationship を取得。
         namespaces = {'ns': before_root.nsmap[None]}
@@ -176,6 +186,7 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
             if target and target_ptn.fullmatch(target):
                 existings.append(rel)
 
+        # 保存後の xml に取得した Relationship を足していく。
         max_id = get_rel_max_id(after_root)
         for rel in existings:
             # 保存後の sheet*.xml.rels に同じ Relationship があれば、スキップ。
@@ -200,8 +211,12 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
                 after_root.remove(rel)
 
         # 保存する。
-        tree = etree.ElementTree(after_root)
-        tree.write(dest_dir / f.name, encoding='utf-8')
+        if len(after_root):
+            tree = etree.ElementTree(after_root)
+            tree.write(f2, encoding='utf-8')
+        else:
+            # root に子要素がなければファイルを削除する。
+            f2.unlink(missing_ok=True)
 
 
 def restore_doc_props_app(before_dir: Path, after_dir: Path):
