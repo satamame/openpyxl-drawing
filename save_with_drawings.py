@@ -105,22 +105,15 @@ def get_rel_max_id(el: Element) -> int:
     return max_id
 
 
-def restore_worksheets(before_dir: Path, after_dir: Path):
-    '''xl/worksheets/ フォルダ下の sheet*.xml の drawing 要素を復元する。
-
-    ついでに legacyDrawing 要素を削除する。
+def adjust_worksheets(after_dir: Path):
+    '''xl/worksheets/ フォルダ下の sheet*.xml の内容を調整する。
     '''
-    src_dir = before_dir / 'xl/worksheets'
     dest_dir = after_dir / 'xl/worksheets'
 
     fname_ptn = re.compile(r'sheet[0-9]+\.xml')
 
-    for f in src_dir.iterdir():
+    for f in dest_dir.iterdir():
         if not (f.is_file() and fname_ptn.fullmatch(f.name)):
-            continue
-
-        f2 = dest_dir / f.name
-        if not f2.is_file():
             continue
 
         tree = etree.parse(f)
@@ -128,24 +121,51 @@ def restore_worksheets(before_dir: Path, after_dir: Path):
 
         namespaces = {'ns': root.nsmap[None]}
 
-        # `<drawing>` 要素。
+        # まず、`<drawing>` 要素と `<legacyDrawing>` 要素を削除する。
         drawings = root.xpath("ns:drawing", namespaces=namespaces)
-
-        # 保存後の xml に追加する。
-        tree = etree.parse(f2)
-        root = tree.getroot()
-
         for el in drawings:
-            root.append(el)
-
-        # `<legacyDrawing>` 要素は削除する。
+            root.remove(el)
         legacy_drawings = root.xpath("ns:legacyDrawing", namespaces=namespaces)
         for el in legacy_drawings:
             root.remove(el)
 
+        # 対応する sheet*.xml.rels ファイル
+        rel_f = after_dir / f'xl/worksheets/_rels/{f.name}.rels'
+        if not rel_f.is_file():
+            continue
+
+        rel_tree = etree.parse(rel_f)
+        rel_root = rel_tree.getroot()
+
+        # Target="../drawings/drawing*.xml" である Relationship を取得。
+        namespaces = {'ns': rel_root.nsmap[None]}
+        rels = rel_root.xpath('ns:Relationship', namespaces=namespaces)
+        target_ptn = re.compile(r'\.\./drawings/drawing[0-9]+.xml')
+        drawings = []
+        for rel in rels:
+            target = rel.get('Target')
+            if target and target_ptn.fullmatch(target):
+                drawings.append(rel)
+
+        # sheet*.xml の root に namespace:r を追加して、新しい root を作る。
+        rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/" + \
+            "relationships"
+        nsmap = root.nsmap.copy() if root.nsmap else {}
+        nsmap["r"] = rel_ns
+
+        # 新しい root を作成し直す（既存の要素を移植）
+        new_root = etree.Element(root.tag, nsmap=nsmap)
+        new_root.extend(root)
+
+        # 新しい root に Relation と同じ id の drawing 要素を追加する。
+        for drawing in drawings:
+            el = etree.Element('drawing')
+            el.set(f'{{{rel_ns}}}id', drawing.get('Id'))
+            new_root.append(el)
+
         # 保存する。
-        tree = etree.ElementTree(root)
-        tree.write(f2, encoding='utf-8')
+        tree = etree.ElementTree(new_root)
+        tree.write(f, encoding='utf-8')
 
 
 def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
@@ -176,6 +196,16 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
             after_tree = etree.parse(f2)
             after_root = after_tree.getroot()
 
+        # Target="../drawings/vmlDrawing*.vml" である Relationship を削除。
+        # Target="/xl/drawings/vmlDrawing*.vml" になっている場合も考慮する。
+        namespaces = {'ns': after_root.nsmap[None]}
+        rels = after_root.xpath('ns:Relationship', namespaces=namespaces)
+        target_ptn = re.compile(r'(\.\.|/xl)/drawings/vmlDrawing[0-9]+.vml')
+        for rel in rels:
+            target = rel.get("Target")
+            if target and target_ptn.fullmatch(target):
+                after_root.remove(rel)
+
         # 保存前の Target="../drawings/drawing*.xml" である Relationship を取得。
         namespaces = {'ns': before_root.nsmap[None]}
         rels = before_root.xpath('ns:Relationship', namespaces=namespaces)
@@ -187,6 +217,7 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
                 existings.append(rel)
 
         # 保存後の xml に取得した Relationship を足していく。
+        # id は採番しなおす。
         max_id = get_rel_max_id(after_root)
         for rel in existings:
             # 保存後の sheet*.xml.rels に同じ Relationship があれば、スキップ。
@@ -199,16 +230,6 @@ def restore_sheet_xml_rels(before_dir: Path, after_dir: Path):
             max_id += 1
             rel.set('Id', f'rId{max_id}')
             after_root.append(rel)
-
-        # Target="../drawings/vmlDrawing*.vml" である Relationship を削除。
-        # Target="/xl/drawings/vmlDrawing*.vml" になっている場合も考慮する。
-        namespaces = {'ns': after_root.nsmap[None]}
-        rels = after_root.xpath('ns:Relationship', namespaces=namespaces)
-        target_ptn = re.compile(r'(\.\.|/xl)/drawings/vmlDrawing[0-9]+.vml')
-        for rel in rels:
-            target = rel.get("Target")
-            if target and target_ptn.fullmatch(target):
-                after_root.remove(rel)
 
         # 保存する。
         if len(after_root):
@@ -309,7 +330,6 @@ def save_with_drawings(
 
         # xl/drawings/ フォルダを復元 (before ⇒ after) する。
         # 保存後にフォルダが存在するため、削除してから復元する。
-        # TODO: 「削除してから復元」で矛盾が起きないか確認すること。
         restore_xl_drawings_folder(before_dir, after_dir)
 
         # xl/worksheets/_rels/sheet*.xml.rels 内の Relation を復元する。
@@ -318,17 +338,12 @@ def save_with_drawings(
         # docProps/app.xml の重要な要素を復元する。
         restore_doc_props_app(before_dir, after_dir)
 
-        # xl/ctrlProps/ フォルダを削除する。※ ActiveX control を使っていない前提。
+        # xl/ctrlProps/ フォルダを削除する
+        # ※ ActiveX control を使っていない前提。
         shutil.rmtree(after_dir / 'xl/ctrlProps', ignore_errors=True)
 
-        ''' **** ここまで動作確認済み。****
-        '''
-
-        # xl/worksheets/_rels/ フォルダを復元 (before ⇒ after) する。
-        restore_folder(before_dir, after_dir, 'xl/worksheets/_rels/')
-
-        # xl/worksheets/sheet*.xml の内容を復元 (before ⇒ after) する。
-        restore_worksheets(before_dir, after_dir)
+        # xl/worksheets/sheet*.xml の内容を調整する。
+        adjust_worksheets(after_dir)
 
         # dest に圧縮しなおす。
         with zipfile.ZipFile(dest, 'w') as zf:
